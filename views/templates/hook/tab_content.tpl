@@ -47,7 +47,7 @@
 
 <script src="https://kit.fontawesome.com/c73bb87b99.js" crossorigin="anonymous"></script>
 
-<div class="tab-pane" id="cocolis">
+<div class="tab-pane fade" id="cocolisTabContent" role="tabpanel" aria-labelledby="cocolisTab">
     <h4 class="visible-print">{l s='Cocolis Status' mod='cocolis'}</h4>
     <img src="{$module_dir|escape:'html':'UTF-8'}/logo.png" id="payment-logo" class="pull-left" />
     <h2 style="text-align:center; padding-right: 32px;"><b>{l s='Track your delivery' mod='cocolis'}</b> <b
@@ -80,7 +80,7 @@
                         <h4 class="tracking"><i class="far fa-dot-circle"></i> {l s='In delivering' mod='cocolis'}</h4>
                         <h4 class="tracking"><i class="far fa-dot-circle"></i> {l s='Delivered' mod='cocolis'}</h4>
                     </div>
-                    <h4>{l s='You can access the ride:' mod='cocolis'} <a href="{$ridelink}">{l s='here' mod='cocolis'}</a>
+                    <h4>{l s='You can access the ride:' mod='cocolis'} <a href="{$ridelink}" target="_blank" rel="noopener noreferrer">{l s='here' mod='cocolis'}</a>
                     </h4>
                 {/if}
 
@@ -160,6 +160,6 @@
                 {/if}
 
                 <h4 style="padding-top: 30px;">{l s='Link to the Cocolis tracking page:' mod='cocolis'} <a
-                        href="{$sellerURL}">{l s='here' mod='cocolis'}</a></h4>
+                        href="{$sellerURL}" target="_blank" rel="noopener noreferrer">{l s='here' mod='cocolis'}</a></h4>
             </div>
 </div>

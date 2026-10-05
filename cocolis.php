@@ -73,7 +73,7 @@ class Cocolis extends CarrierModule
     {
         $this->name = 'cocolis';
         $this->tab = 'shipping_logistics';
-        $this->version = '1.0.10';
+        $this->version = '1.1.0-ps9';
         $this->author = 'Cocolis';
         $this->need_instance = 1;
         /**
@@ -83,12 +83,12 @@ class Cocolis extends CarrierModule
 
         parent::__construct();
         $this->displayName = $this->l('Cocolis');
-        $this->description = $this->l("Utilisez cocolis.fr comme mode de livraison. 
+        $this->description = $this->l("Utilisez cocolis.fr comme mode de livraison.
             Spécialisé dans la livraison communautaire, cocolis vous permettra d'envoyer des colis hors format.");
 
         $this->confirmUninstall = $this->l('Our delivery service will no longer be available on your site.');
 
-        $this->ps_versions_compliancy = array('min' => '1.7', 'max' => _PS_VERSION_);
+        $this->ps_versions_compliancy = array('min' => '9.1', 'max' => _PS_VERSION_);
     }
 
     /**
@@ -105,7 +105,10 @@ class Cocolis extends CarrierModule
             return false;
         }
 
-        $carriers = Carrier::getCarriers($cookie->id_lang, true, false, false, null, PS_CARRIERS_AND_CARRIER_MODULES_NEED_RANGE);
+        $filter = defined('PS_CARRIERS_AND_CARRIER_MODULES_NEED_RANGE')
+            ? constant('PS_CARRIERS_AND_CARRIER_MODULES_NEED_RANGE')
+            : Carrier::PS_CARRIERS_AND_CARRIER_MODULES_NEED_RANGE;
+        $carriers = Carrier::getCarriers($cookie->id_lang, true, false, false, null, $filter);
 
         // Saving id carrier list
         $id_carrier_list = array();
@@ -115,16 +118,20 @@ class Cocolis extends CarrierModule
 
         if (!in_array((int)(Configuration::get('COCOLIS_CARRIER_ID')), $id_carrier_list) || is_null(Configuration::get('COCOLIS_CARRIER_ID'))) {
             $carrier = $this->addCarrier();
+            // Ranges must exist before the carrier is assigned to zones: Carrier::addZone()
+            // only populates the ps_delivery price grid for ranges that already exist at
+            // that point, otherwise the carrier silently has no delivery price at all and
+            // never appears at checkout.
+            $this->addRanges($carrier);
             $this->addZones($carrier);
             $this->addGroups($carrier);
-            $this->addRanges($carrier);
         }
 
         if (!in_array((int)(Configuration::get('COCOLIS_CARRIER_ASSURANCE_ID')), $id_carrier_list) || is_null(Configuration::get('COCOLIS_CARRIER_ASSURANCE_ID'))) {
             $carrier_insurance = $this->addCarrierInsurance();
+            $this->addRanges($carrier_insurance);
             $this->addZones($carrier_insurance);
             $this->addGroups($carrier_insurance);
-            $this->addRanges($carrier_insurance);
         }
 
         Configuration::updateValue('COCOLIS_LIVE_MODE', false);
@@ -132,16 +139,9 @@ class Cocolis extends CarrierModule
 
 
         return parent::install() &&
-            $this->registerHook('header') &&
-            $this->registerHook('backOfficeHeader') &&
-            $this->registerHook('updateCarrier') &&
             $this->registerHook('actionPaymentConfirmation') &&
-            $this->registerHook('moduleRoutes') &&
-            $this->registerHook('displayAdminOrderContentShip') &&
-            $this->registerHook('displayAdminOrderContentOrder') &&
-            $this->registerHook('displayAdminOrderTabShip') &&
-            $this->registerHook('displayAdminOrderTabOrder') &&
-            $this->registerHook('displayAdminOrder') &&
+            $this->registerHook('displayAdminOrderTabLink') &&
+            $this->registerHook('displayAdminOrderTabContent') &&
             $this->registerHook('termsAndConditions') &&
             $this->registerHook('actionFrontControllerSetMedia') &&
             $this->registerHook('displayOrderDetail');
@@ -159,8 +159,16 @@ class Cocolis extends CarrierModule
         Configuration::deleteByName('COCOLIS_ZIP');
         Configuration::deleteByName('COCOLIS_CITY');
         Configuration::deleteByName('COCOLIS_COUNTRY');
-        // Configuration::deleteByName('COCOLIS_CARRIER_ID');
-        // Configuration::deleteByName('COCOLIS_CARRIER_ASSURANCE_ID');
+
+        foreach (Carrier::getCarriers(Context::getContext()->language->id, false, false, false, null, Carrier::ALL_CARRIERS) as $carrier_row) {
+            if ($carrier_row['external_module_name'] === $this->name) {
+                $carrier = new Carrier((int)$carrier_row['id_carrier']);
+                $carrier->delete();
+            }
+        }
+
+        Configuration::deleteByName('COCOLIS_CARRIER_ID');
+        Configuration::deleteByName('COCOLIS_CARRIER_ASSURANCE_ID');
 
         include(dirname(__FILE__) . '/sql/uninstall.php');
 
@@ -195,62 +203,74 @@ class Cocolis extends CarrierModule
          */
 
         if (((bool)Tools::isSubmit('webhooks')) == true) {
-            $client = $this->authenticatedClient();
-            $webhooks = $client->getWebhookClient()->getAll();
-            $status = 'pending';
+            $this->postProcess();
 
-            if (!empty($webhooks)) {
-                foreach ($webhooks as $webhook) {
-                    if (strpos($webhook->url, Tools::getShopDomainSsl(true)) !== false) {
-                        $status = 'already';
-                    } else {
-                        $client->getWebhookClient()->update(
-                            [
-                                'event' => $webhook->event,
-                                'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=' . $webhook->event,
-                                'active' => true
-                            ],
-                            $webhook->id
-                        );
-                        $status = 'updated';
-                    }
-                }
-            } else {
-                // Previously /cocolis/webhooks&event=blabla but not working with all versions
-                $client->getWebhookClient()->create([
-                    'event' => 'ride_published',
-                    'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=ride_published',
-                    'active' => true
-                ]);
-                $client->getWebhookClient()->create([
-                    'event' => 'ride_expired',
-                    'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=ride_expired',
-                    'active' => true
-                ]);
-                $client->getWebhookClient()->create([
-                    'event' => 'offer_accepted',
-                    'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=offer_accepted',
-                    'active' => true
-                ]);
-                $client->getWebhookClient()->create([
-                    'event' => 'offer_cancelled',
-                    'url' => Tools::getShopDomainSsl(true) . '//index.php?fc=module&module=cocolis&controller=webhooks&event=offer_cancelled',
-                    'active' => true
-                ]);
-                $client->getWebhookClient()->create([
-                    'event' => 'offer_completed',
-                    'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=offer_completed',
-                    'active' => true
-                ]);
-                $status = 'success';
+            if (!Configuration::get('COCOLIS_APPID') || !Configuration::get('COCOLIS_PASSWORD')) {
+                return $this->redirectWithNotifications('missing_credentials');
             }
 
-            if ($status == 'already') {
-                $this->redirectWithNotifications('already');
-            } elseif ($status == 'updated') {
-                $this->redirectWithNotifications('updated');
-            } elseif ($status == 'success') {
-                $this->redirectWithNotifications('success');
+            try {
+                $client = $this->authenticatedClient();
+                $webhooks = $client->getWebhookClient()->getAll();
+                $status = 'pending';
+
+                if (!empty($webhooks)) {
+                    foreach ($webhooks as $webhook) {
+                        if (strpos($webhook->url, Tools::getShopDomainSsl(true)) !== false) {
+                            $status = 'already';
+                        } else {
+                            $client->getWebhookClient()->update(
+                                [
+                                    'event' => $webhook->event,
+                                    'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=' . $webhook->event,
+                                    'active' => true
+                                ],
+                                $webhook->id
+                            );
+                            $status = 'updated';
+                        }
+                    }
+                } else {
+                    // Previously /cocolis/webhooks&event=blabla but not working with all versions
+                    $client->getWebhookClient()->create([
+                        'event' => 'ride_published',
+                        'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=ride_published',
+                        'active' => true
+                    ]);
+                    $client->getWebhookClient()->create([
+                        'event' => 'ride_expired',
+                        'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=ride_expired',
+                        'active' => true
+                    ]);
+                    $client->getWebhookClient()->create([
+                        'event' => 'offer_accepted',
+                        'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=offer_accepted',
+                        'active' => true
+                    ]);
+                    $client->getWebhookClient()->create([
+                        'event' => 'offer_cancelled',
+                        'url' => Tools::getShopDomainSsl(true) . '//index.php?fc=module&module=cocolis&controller=webhooks&event=offer_cancelled',
+                        'active' => true
+                    ]);
+                    $client->getWebhookClient()->create([
+                        'event' => 'offer_completed',
+                        'url' => Tools::getShopDomainSsl(true) . '/index.php?fc=module&module=cocolis&controller=webhooks&event=offer_completed',
+                        'active' => true
+                    ]);
+                    $status = 'success';
+                }
+
+                if ($status == 'already') {
+                    $this->redirectWithNotifications('already');
+                } elseif ($status == 'updated') {
+                    $this->redirectWithNotifications('updated');
+                } elseif ($status == 'success') {
+                    $this->redirectWithNotifications('success');
+                }
+            } catch (\Cocolis\Api\Errors\UnauthorizedException $e) {
+                return $this->redirectWithNotifications('invalid_credentials');
+            } catch (\Cocolis\Api\Errors\CocolisException $e) {
+                return $this->redirectWithNotifications('api_error');
             }
         } elseif (((bool)Tools::isSubmit('submitCocolisModule')) == true) {
             $this->postProcess();
@@ -359,7 +379,7 @@ class Cocolis extends CarrierModule
                         'type' => 'text',
                         'name' => 'COCOLIS_LENGTH',
                         'label' => $this->l('Average length (in cm)'),
-                        'desc' => $this->l("Permet de calculer les frais en l'absence du volume renseigné 
+                        'desc' => $this->l("Permet de calculer les frais en l'absence du volume renseigné
                             dans la fiche produit")
                     ),
                     array(
@@ -435,7 +455,16 @@ class Cocolis extends CarrierModule
         $form_values = $this->getConfigFormValues();
 
         foreach (array_keys($form_values) as $key) {
-            Configuration::updateValue($key, Tools::getValue($key));
+            $value = Tools::getValue($key);
+
+            // The password field is always rendered empty (never pre-filled) for
+            // security reasons, so an empty submission means "keep the current
+            // password", not "erase it".
+            if ($key === 'COCOLIS_PASSWORD' && $value === '') {
+                continue;
+            }
+
+            Configuration::updateValue($key, $value);
         }
     }
 
@@ -482,7 +511,7 @@ class Cocolis extends CarrierModule
                         $product_ids[] = (int)$product['id_product'] . (int)$product['quantity'];
                     }
                     $product_ids = serialize($product_ids);
-                    Db::getInstance()->execute("INSERT INTO `" . _DB_PREFIX_ . "cocolis_cart` 
+                    Db::getInstance()->execute("INSERT INTO `" . _DB_PREFIX_ . "cocolis_cart`
                 (`hash_cart`, `products`, `cost`) VALUES ('" . $cart_hash . "', '" . $product_ids .  "', 0)");
                 } elseif (
                     !empty(array_diff($product_ids_2, $product_ids)) ||
@@ -552,8 +581,8 @@ class Cocolis extends CarrierModule
                         $product_ids[] = (int)$product['id_product'] . (int)$product['quantity'];
                     }
                     $product_ids = serialize($product_ids);
-                    Db::getInstance()->execute("UPDATE `" . _DB_PREFIX_ . "cocolis_cart` 
-                SET products = '" . $product_ids . "', cost = '" . $shipping_cost . "', 
+                    Db::getInstance()->execute("UPDATE `" . _DB_PREFIX_ . "cocolis_cart`
+                SET products = '" . $product_ids . "', cost = '" . $shipping_cost . "',
                 cost_insurance = '" . $shipping_cost_insurance . "' WHERE hash_cart = '" . $cart_hash . "'");
                 }
             }
@@ -571,7 +600,7 @@ class Cocolis extends CarrierModule
             $shipping_cost_insurance = Db::getInstance()->getValue($sql);
 
             if (Configuration::get('COCOLIS_DEBUG_MODE')) {
-                Logger::addLog('[Module Cocolis] Valeurs : SHIPPING COST : ' . $shipping_cost . ' - SHIPPING COST INSURANCE : ' . $shipping_cost_insurance . ' - ID CARRIER : ' . $this->id_carrier, 1);
+                PrestaShopLogger::addLog('[Module Cocolis] Valeurs : SHIPPING COST : ' . $shipping_cost . ' - SHIPPING COST INSURANCE : ' . $shipping_cost_insurance . ' - ID CARRIER : ' . $this->id_carrier, 1);
             }
 
             if ($shipping_cost_insurance == 0) {
@@ -593,7 +622,7 @@ class Cocolis extends CarrierModule
             return false;
         } catch (Exception $e) {
             if (Configuration::get('COCOLIS_DEBUG_MODE')) {
-                Logger::addLog('[Module Cocolis] Erreur : ' . $e->getMessage(), 3);
+                PrestaShopLogger::addLog('[Module Cocolis] Erreur : ' . $e->getMessage(), 3);
             }
 
             return false;
@@ -627,16 +656,90 @@ class Cocolis extends CarrierModule
 
     /**
      * Onglet de suivi Cocolis
+     *
+     * PrestaShop 9 does not fire the legacy displayAdminOrderTabShip /
+     * displayAdminOrderContentShip hooks anymore (the order page is now
+     * built in Symfony/Twig). The current equivalent is the
+     * displayAdminOrderTabLink / displayAdminOrderTabContent pair.
      */
 
-    public function hookDisplayAdminOrderTabShip($params)
+    private function getCocolisTrackingVars($order, $audience = 'seller')
     {
-        $order = $params['order'];
+        $sql = new DbQuery();
+        $sql->from("cocolis_order_history");
+        $sql->select('*');
+        $sql->orderby('id');
+        $sql->where('order_id =' . (int) $order->id);
+        $results = Db::getInstance()->executeS($sql);
+
+        $sql = new DbQuery();
+        $sql->from("cocolis_order_history");
+        $sql->select('comment');
+        $sql->orderby('id DESC');
+        $sql->where('order_id =' . (int) $order->id);
+        $state = Db::getInstance()->getValue($sql);
+
+        $sql = new DbQuery();
+        $sql->from("cocolis_order_history");
+        $sql->select('webhook_params');
+        $sql->orderby('id DESC');
+        $sql->where('order_id =' . (int) $order->id);
+        $webhook = Db::getInstance()->getValue($sql);
+
+        $array = json_decode($webhook, true);
+        $resource_id = isset($array['resource_id']) ? $array['resource_id'] : null;
+
+        if (!empty($resource_id)) {
+            $client = $this->authenticatedClient();
+            $client = $client->getRideClient();
+            $ride = $client->get($resource_id);
+            $slug = $ride->slug;
+
+            // The public ride URL is "<slug>-<ride id>"; without the id the page is not found.
+            $link = Configuration::get('COCOLIS_LIVE_MODE')
+                ? 'https://cocolis.fr/ride-public/' . $slug . '-' . $resource_id
+                : 'https://sandbox.cocolis.fr/ride-public/' . $slug . '-' . $resource_id;
+
+            return array(
+                'ridelink' => $link, 'order_cocolis' => $results, 'actual_state' => $state,
+                'tracking' => $audience === 'seller' ? $ride->seller_tracking : $ride->buyer_tracking,
+                'buyerURL' => $ride->getBuyerURL(), 'sellerURL' => $ride->getSellerURL()
+            );
+        }
+
+        return array(
+            'ridelink' => '#', 'order_cocolis' => $results, 'actual_state' => $state,
+            'tracking' => '#', 'buyerURL' => '#', 'sellerURL' => '#'
+        );
+    }
+
+    public function hookDisplayAdminOrderTabLink($params)
+    {
+        $order = new Order((int) $params['id_order']);
         $orderCarrier = new OrderCarrier($order->getIdOrderCarrier());
         $carrier = new Carrier($orderCarrier->id_carrier);
-        if ($carrier->external_module_name == "cocolis") {
-            return $this->display(__FILE__, '/views/templates/hook/tab_ship.tpl');
+
+        if ($carrier->external_module_name != "cocolis") {
+            return '';
         }
+
+        return $this->display(__FILE__, '/views/templates/hook/tab_link.tpl');
+    }
+
+    public function hookDisplayAdminOrderTabContent($params)
+    {
+        $order = new Order((int) $params['id_order']);
+        $orderCarrier = new OrderCarrier($order->getIdOrderCarrier());
+        $carrier = new Carrier($orderCarrier->id_carrier);
+
+        if ($carrier->external_module_name != "cocolis") {
+            return '';
+        }
+
+        $this->context->smarty->assign('module_dir', $this->_path);
+        $this->context->smarty->assign($this->getCocolisTrackingVars($order, 'seller'));
+
+        return $this->display(__FILE__, '/views/templates/hook/tab_content.tpl');
     }
 
     public function hookDisplayOrderDetail($params)
@@ -646,117 +749,37 @@ class Cocolis extends CarrierModule
         $carrier = new Carrier($orderCarrier->id_carrier);
 
         if ($carrier->external_module_name == "cocolis") {
-            $sql = new DbQuery();
-            $sql->from("cocolis_order_history");
-            $sql->select('*');
-            $sql->orderby('id');
-            $sql->where('order_id =' . $order->getIdOrderCarrier());
-            $results = Db::getInstance()->executes($sql);
+            $this->context->smarty->assign($this->getCocolisTrackingVars($order, 'buyer'));
 
-            $sql = new DbQuery();
-            $sql->from("cocolis_order_history");
-            $sql->select('comment');
-            $sql->orderby('id DESC');
-            $sql->where('order_id =' . $order->getIdOrderCarrier());
-            $state = Db::getInstance()->getValue($sql);
-
-            $sql = new DbQuery();
-            $sql->from("cocolis_order_history");
-            $sql->select('webhook_params');
-            $sql->orderby('id DESC');
-            $sql->where('order_id =' . $order->getIdOrderCarrier());
-            $webhook = Db::getInstance()->getValue($sql);
-
-            $array = json_decode($webhook, true);
-
-            $resource_id = $array['resource_id'];
-            if (!empty($resource_id)) {
-                $client = $this->authenticatedClient();
-                $client = $client->getRideClient();
-                $ride = $client->get($resource_id);
-                $slug = $ride->slug;
-
-                $link = Configuration::get('COCOLIS_LIVE_MODE') ? 'https://cocolis.fr/ride-public/' .
-                    $slug : 'https://sandbox.cocolis.fr/ride-public/' . $slug;
-
-                $this->context->smarty->assign(array(
-                    'ridelink' => $link, 'order_cocolis' => $results, 'actual_state' => $state,
-                    'tracking' => $ride->buyer_tracking, 'buyerURL' => $ride->getBuyerURL(),
-                    'sellerURL' => $ride->getSellerURL()
-                ));
-            } else {
-                $this->context->smarty->assign(array(
-                    'ridelink' => '#', 'order_cocolis' => $results, 'actual_state' => $state,
-                    'tracking' => '#', 'buyerURL' => '#',
-                    'sellerURL' => '#'
-                ));
-            }
             return $this->display(__FILE__, '/views/templates/hook/content_ship_front.tpl');
-        }
-    }
-
-    public function hookDisplayAdminOrderContentShip($params)
-    {
-        $order = $params['order'];
-        $orderCarrier = new OrderCarrier($order->getIdOrderCarrier());
-        $carrier = new Carrier($orderCarrier->id_carrier);
-
-        if ($carrier->external_module_name == "cocolis") {
-            $sql = new DbQuery();
-            $sql->from("cocolis_order_history");
-            $sql->select('*');
-            $sql->orderby('id');
-            $sql->where('order_id =' . $order->getIdOrderCarrier());
-            $results = Db::getInstance()->executes($sql);
-
-            $sql = new DbQuery();
-            $sql->from("cocolis_order_history");
-            $sql->select('comment');
-            $sql->orderby('id DESC');
-            $sql->where('order_id =' . $order->getIdOrderCarrier());
-            $state = Db::getInstance()->getValue($sql);
-
-            $sql = new DbQuery();
-            $sql->from("cocolis_order_history");
-            $sql->select('webhook_params');
-            $sql->orderby('id DESC');
-            $sql->where('order_id =' . $order->getIdOrderCarrier());
-            $webhook = Db::getInstance()->getValue($sql);
-
-            $array = json_decode($webhook, true);
-
-            $resource_id = $array['resource_id'];
-            if (!empty($resource_id)) {
-                $client = $this->authenticatedClient();
-                $client = $client->getRideClient();
-                $ride = $client->get($resource_id);
-                $slug = $ride->slug;
-
-                $link = Configuration::get('COCOLIS_LIVE_MODE') ? 'https://cocolis.fr/ride-public/' .
-                    $slug . '-' . $resource_id : 'https://sandbox.cocolis.fr/ride-public/' . $slug . '-' . $resource_id;
-
-                $this->context->smarty->assign(array(
-                    'ridelink' => $link, 'order_cocolis' => $results, 'actual_state' => $state,
-                    'tracking' => $ride->seller_tracking, 'buyerURL' => $ride->getBuyerURL(),
-                    'sellerURL' => $ride->getSellerURL()
-                ));
-            } else {
-                $this->context->smarty->assign(array(
-                    'ridelink' => '#', 'order_cocolis' => $results, 'actual_state' => $state,
-                    'tracking' => '#', 'buyerURL' => '#',
-                    'sellerURL' => '#'
-                ));
-            }
-            return $this->display(__FILE__, '/views/templates/hook/content_ship.tpl');
         }
     }
 
     public function hookActionPaymentConfirmation($params)
     {
+        // Hook::exec() swallows exceptions outside debug mode, so a failed ride
+        // creation would otherwise go completely unnoticed.
+        try {
+            $this->createCocolisRide($params);
+        } catch (Exception $e) {
+            PrestaShopLogger::addLog(
+                '[Module Cocolis] Impossible de créer la livraison pour la commande '
+                . (int) $params['id_order'] . ' : ' . $e->getMessage(),
+                3
+            );
+        }
+    }
+
+    private function createCocolisRide($params)
+    {
         $id_order = (int) $params['id_order'];
         $order = new Order($id_order);
         $orderCarrier = new OrderCarrier($order->getIdOrderCarrier());
         $carrier = new Carrier($orderCarrier->id_carrier);
+
+        if (Configuration::get('COCOLIS_DEBUG_MODE')) {
+            PrestaShopLogger::addLog('[Module Cocolis] Paiement confirmé pour la commande ' . $id_order . ' (transporteur : ' . $carrier->external_module_name . ')', 1);
+        }
 
         if ($carrier->external_module_name == "cocolis") {
             $client = $this->authenticatedClient();
@@ -790,10 +813,10 @@ class Cocolis extends CarrierModule
 
             $phone = $this->getPhone();
             if ($phone == null) {
-                echo('<p style="color:red;">[Module Cocolis] 
-                <b>Missing cell phone number !</b> 
+                echo('<p style="color:red;">[Module Cocolis]
+                <b>Missing cell phone number !</b>
                 You must configure your store to provide your phone number.
-                </br>Go in <b>Store settings > Contact > Stores</b> 
+                </br>Go in <b>Store settings > Contact > Stores</b>
                 and provide your phone number. The order remains unchanged.</p>');
                 exit;
             }
@@ -813,28 +836,34 @@ class Cocolis extends CarrierModule
                 }
 
                 array_push($arrayname, $product['name']);
-                array_push($arrayproducts, [
+                $ride_object = [
                     "title" => $product['name'],
                     "qty" => $product['cart_quantity'],
                     "height" => (int) $height,
                     "width" => (int) $width,
                     "length" => (int) $depth,
-                ]);
+                ];
+
+                // Cocolis shows the photos attached to each object, like its official WooCommerce plugin sends them.
+                $product_image_url = $this->getProductImageUrl((int) $product['id_product']);
+                if ($product_image_url) {
+                    $ride_object["photo_urls"] = [$product_image_url];
+                }
+
+                $weight_class = $this->getCocolisWeightClass((float) $product['weight']);
+                if ($weight_class) {
+                    $ride_object["weight"] = $weight_class;
+                }
+
+                array_push($arrayproducts, $ride_object);
             }
 
             $images = [];
 
-            $products = $order->getProducts();
-
-            foreach ($products as $product) {
-                $id_product = $product['product_id'];
-                $id_image = Product::getCover($id_product);
-                if (sizeof($id_image) > 0) {
-                    $image = new Image($id_image['id_image']);
-                    // get image full URL
-                    $image_url = Tools::getShopDomainSsl(true)
-                        . _THEME_PROD_DIR_ . $image->getExistingImgPath() . ".jpg";
-                    array_push($images, $image_url);
+            foreach ($order->getProducts() as $product) {
+                $product_image_url = $this->getProductImageUrl((int) $product['product_id']);
+                if ($product_image_url) {
+                    array_push($images, $product_image_url);
                 }
             }
 
@@ -843,6 +872,14 @@ class Cocolis extends CarrierModule
             } else {
                 $insurance = false;
             }
+
+            // Many shops only ask for the mobile number, so fall back on it when phone is empty.
+            $to_phone = !empty($address->phone) ? $address->phone : $address->phone_mobile;
+
+            // Cocolis expects amounts in cents.
+            $shipping_price_cents = (int) round($order->total_shipping_tax_incl * 100);
+            // Value of the goods: order total without shipping, same basis as the insurance threshold.
+            $content_value_cents = (int) round(($order->total_paid_tax_incl - $order->total_shipping_tax_incl) * 100);
 
             if ($insurance == true) {
                 $birthday = new DateTime($customer->birthday);
@@ -863,7 +900,9 @@ class Cocolis extends CarrierModule
                     "to_pickup_date" => $to_date,
                     "is_passenger" => false,
                     "is_packaged" => true,
-                    "price" => (int) $order->total_shipping_tax_incl * 100,
+                    "price" => $shipping_price_cents,
+                    "content_value" => $content_value_cents,
+                    "external_price" => $shipping_price_cents,
                     "volume" => $dimensions,
                     "environment" => "objects",
                     "photo_urls" => $images,
@@ -885,7 +924,7 @@ class Cocolis extends CarrierModule
                         "to_country" => 'FR',
                         "to_contact_name" => $customer->firstname . ' ' . $customer->lastname,
                         "to_contact_email" => $customer->email,
-                        "to_contact_phone" => $address->phone,
+                        "to_contact_phone" => $to_phone,
                         "insurance_firstname" => $customer->firstname,
                         "insurance_lastname" =>  $customer->lastname,
                         "insurance_address" => $address->address1,
@@ -912,7 +951,9 @@ class Cocolis extends CarrierModule
                     "to_pickup_date" => $to_date,
                     "is_passenger" => false,
                     "is_packaged" => true,
-                    "price" => (int) $order->total_shipping_tax_incl * 100,
+                    "price" => $shipping_price_cents,
+                    "content_value" => $content_value_cents,
+                    "external_price" => $shipping_price_cents,
                     "volume" => $dimensions,
                     "environment" => "objects",
                     "photo_urls" => $images,
@@ -934,13 +975,21 @@ class Cocolis extends CarrierModule
                         "to_country" => 'FR',
                         "to_contact_name" => $customer->firstname . ' ' . $customer->lastname,
                         "to_contact_email" => $customer->email,
-                        "to_contact_phone" => $address->phone
+                        "to_contact_phone" => $to_phone
                     ],
                 ];
             }
 
             $client = $client->getRideClient();
-            $client->create($params);
+            $ride = $client->create($params);
+
+            if (Configuration::get('COCOLIS_DEBUG_MODE')) {
+                PrestaShopLogger::addLog(
+                    '[Module Cocolis] Livraison créée pour la commande ' . $id_order
+                    . ' : id ' . $ride->id . ', suivi vendeur ' . $ride->getSellerURL(),
+                    1
+                );
+            }
 
             // Clear cache cart
             Db::getInstance()->execute("TRUNCATE TABLE `" . _DB_PREFIX_ . "cocolis_cart`");
@@ -974,6 +1023,35 @@ class Cocolis extends CarrierModule
         }
 
         return $customTerms;
+    }
+
+    private function getProductImageUrl($id_product)
+    {
+        $cover = Product::getCover($id_product);
+        if (empty($cover)) {
+            return null;
+        }
+
+        $image = new Image($cover['id_image']);
+
+        return Tools::getShopDomainSsl(true) . _THEME_PROD_DIR_ . $image->getExistingImgPath() . ".jpg";
+    }
+
+    /**
+     * Only the two weight classes seen in the Cocolis API responses are mapped.
+     * Heavier or unknown weights are left out so the API applies its default.
+     */
+    private function getCocolisWeightClass($weight)
+    {
+        if ($weight > 0 && $weight < 5) {
+            return 'less_than_5_kg';
+        }
+
+        if ($weight >= 5 && $weight <= 30) {
+            return 'between_5_and_30_kg';
+        }
+
+        return null;
     }
 
     protected function addCarrier()

@@ -23,8 +23,15 @@
 *  International Registered Trademark & Property of PrestaShop SA
 *}
 
-<li>
-						<a href="#cocolis">
-							{l s='Cocolis Status' mod='cocolis'}
-						</a>
-					</li>
+<li class="nav-item">
+    <a class="nav-link"
+       id="cocolisTab"
+       data-toggle="tab"
+       href="#cocolisTabContent"
+       role="tab"
+       aria-controls="cocolisTabContent"
+       aria-selected="false"
+    >
+        {l s='Cocolis Status' mod='cocolis'}
+    </a>
+</li>

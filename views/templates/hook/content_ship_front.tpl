@@ -88,7 +88,7 @@
                         <h4 class="tracking"><i class="far fa-dot-circle"></i> {l s='In delivering' mod='cocolis'}</h4>
                         <h4 class="tracking"><i class="far fa-dot-circle"></i> {l s='Delivered' mod='cocolis'}</h4>
                     </div>
-                    <h4>{l s='You can access the ride:' mod='cocolis'} <a href="{$ridelink}">{l s='here' mod='cocolis'}</a>
+                    <h4>{l s='You can access the ride:' mod='cocolis'} <a href="{$ridelink}" target="_blank" rel="noopener noreferrer">{l s='here' mod='cocolis'}</a>
                     </h4>
                 {/if}
 
@@ -168,6 +168,6 @@
                 {/if}
 
                 <h4 style="padding-top: 30px;">{l s='Link to the Cocolis tracking page:' mod='cocolis'} <a
-                        href="{$buyerURL}">{l s='here' mod='cocolis'}</a></h4>
+                        href="{$buyerURL}" target="_blank" rel="noopener noreferrer">{l s='here' mod='cocolis'}</a></h4>
             </div>
 </div>
