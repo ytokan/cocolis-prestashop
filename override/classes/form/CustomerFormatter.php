@@ -25,7 +25,7 @@
  *  International Registered Trademark & Property of PrestaShop SA
  */
 
-use Symfony\Component\Translation\TranslatorInterface;
+use Symfony\Contracts\Translation\TranslatorInterface;
 
 class CustomerFormatter extends CustomerFormatterCore
 {
