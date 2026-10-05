@@ -34,8 +34,8 @@ class CocolisWebhooksModuleFrontController extends ModuleFrontController
 
     public function postProcess()
     {
-        $orderid = Tools::getValue('external_id');
-        $event = Tools::getValue('event');
+        $orderid = (int) Tools::getValue('external_id');
+        $event = (string) Tools::getValue('event');
 
         if (empty($event) || empty($orderid)) {
             echo('Event or order ID missing from Webhook');
@@ -59,10 +59,14 @@ class CocolisWebhooksModuleFrontController extends ModuleFrontController
                 break;
         }
 
-        Logger::addLog('Webhook ' . $event . ' intercepté par le module Cocolis pour la commande ' . $orderid);
-        Db::getInstance()->execute("INSERT INTO `" . _DB_PREFIX_ . "cocolis_order_history` 
-            (`order_id`, `comment`, `created_at`, `webhook_params`) 
-            VALUES (" . (int) $orderid . ", '" . $event .  "', NOW(), '" . json_encode(Tools::getAllValues()) . "')");
+        PrestaShopLogger::addLog('Webhook ' . $event . ' intercepté par le module Cocolis pour la commande ' . $orderid);
+        // The event and the parameters come from a public request: they must be escaped.
+        Db::getInstance()->insert('cocolis_order_history', [
+            'order_id' => $orderid,
+            'comment' => pSQL($event),
+            'created_at' => date('Y-m-d'),
+            'webhook_params' => pSQL(json_encode(Tools::getAllValues())),
+        ]);
         exit;
     }
 }
