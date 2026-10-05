@@ -3,5 +3,7 @@
 .history
 .php_cs.cache
 
+config_*.xml
+
 vendor
 !vendor/cocolis
